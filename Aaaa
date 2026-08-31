@@ -1,0 +1,299 @@
+--[[ DBD Script - Ультра-лёгкая версия для ПК (без Rayfield)
+     Функции: ESP игроков, ESP генераторов, WalkSpeed, Fast Repair,
+     No Skillcheck Fail, Immunity ]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+-- Переменные
+local ESPPlayers = false
+local ESPGenerators = false
+local SpeedEnabled = true
+local desiredSpeed = 21
+local FastRepair = false
+local NoSkillcheckFail = true
+local Immunity = true
+local highlights = {}
+local genHighlights = {}
+local maxProgress = {}
+
+-- Цвета
+local SURVIVOR_COLOR = Color3.fromRGB(0, 255, 0)
+local KILLER_COLOR = Color3.fromRGB(255, 0, 0)
+local GENERATOR_COLOR = Color3.fromRGB(255, 255, 0)
+local GENERATOR_DONE_COLOR = Color3.fromRGB(0, 0, 139)
+
+-- Создаём простое меню
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Parent = game.CoreGui
+ScreenGui.Name = "DBDMenu"
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 200, 0, 350)
+Frame.Position = UDim2.new(0, 10, 0, 100)
+Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Frame.BackgroundTransparency = 0.2
+Frame.Parent = ScreenGui
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 30)
+Title.BackgroundTransparency = 1
+Title.Text = "DBD Script"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 16
+Title.Parent = Frame
+
+local function CreateButton(text, posY, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -20, 0, 35)
+    btn.Position = UDim2.new(0, 10, 0, posY)
+    btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 12
+    btn.Parent = Frame
+
+    local highlight = Instance.new("UIStroke")
+    highlight.Color = Color3.fromRGB(100, 100, 100)
+    highlight.Thickness = 1
+    highlight.Parent = btn
+
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+local ESPPlayersBtn = CreateButton("ESP Players: OFF", 40, function()
+    ESPPlayers = not ESPPlayers
+    ESPPlayersBtn.Text = "ESP Players: " .. (ESPPlayers and "ON" or "OFF")
+    if ESPPlayers then
+        refreshPlayerESP()
+    else
+        clearPlayerESP()
+    end
+end)
+
+local ESPGenBtn = CreateButton("ESP Generators: OFF", 85, function()
+    ESPGenerators = not ESPGenerators
+    ESPGenBtn.Text = "ESP Generators: " .. (ESPGenerators and "ON" or "OFF")
+    if ESPGenerators then
+        refreshGenESP()
+    else
+        clearGenESP()
+    end
+end)
+
+local SpeedBtn = CreateButton("Speed: 21 (Random)", 130, function()
+    SpeedEnabled = not SpeedEnabled
+    SpeedBtn.Text = "Speed: " .. (SpeedEnabled and "21 (Random)" or "16")
+    if SpeedEnabled then
+        desiredSpeed = 21
+    else
+        desiredSpeed = 16
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = 16 end
+    end
+end)
+
+local RepairBtn = CreateButton("Fast Repair: OFF", 175, function()
+    FastRepair = not FastRepair
+    RepairBtn.Text = "Fast Repair: " .. (FastRepair and "ON" or "OFF")
+end)
+
+local SkillBtn = CreateButton("No Skillcheck: ON", 220, function()
+    NoSkillcheckFail = not NoSkillcheckFail
+    SkillBtn.Text = "No Skillcheck: " .. (NoSkillcheckFail and "ON" or "OFF")
+end)
+
+local ImmunityBtn = CreateButton("Immunity: ON", 265, function()
+    Immunity = not Immunity
+    ImmunityBtn.Text = "Immunity: " .. (Immunity and "ON" or "OFF")
+end)
+
+-- Функция определения убийцы
+local function isKiller(player)
+    if player.Team then
+        local teamName = player.Team.Name:lower()
+        if teamName:find("killer") or teamName:find("murder") or teamName:find("hunter") then
+            return true
+        end
+    end
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.WalkSpeed > 20 then
+        return true
+    end
+    return false
+end
+
+-- ESP игроков
+local function refreshPlayerESP()
+    if not ESPPlayers then return end
+    clearPlayerESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local color = isKiller(player) and KILLER_COLOR or SURVIVOR_COLOR
+            local hl = Instance.new("Highlight")
+            hl.FillColor = color
+            hl.OutlineColor = color
+            hl.Parent = player.Character
+            table.insert(highlights, hl)
+        end
+    end
+end
+
+local function clearPlayerESP()
+    for _, hl in pairs(highlights) do
+        if hl then hl:Destroy() end
+    end
+    highlights = {}
+end
+
+-- ESP генераторов
+local function findGenerators()
+    local generators = {}
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and (obj.Name:lower():find("generator") or obj.Name:lower():find("gen")) then
+            table.insert(generators, obj)
+        end
+    end
+    return generators
+end
+
+local function isGeneratorCompleted(gen)
+    for _, attr in ipairs({"Repaired", "Completed", "Fixed", "Finished", "Done"}) do
+        if gen:GetAttribute(attr) == true then return true end
+    end
+    for _, child in pairs(gen:GetDescendants()) do
+        if child:IsA("NumberValue") then
+            local n = child.Name:lower()
+            if n:find("progress") or n:find("repair") or n:find("fix") or n:find("charge") or n:find("completion") then
+                local maxVal = child.MaxValue or 100
+                if child.Value >= maxVal then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function refreshGenESP()
+    if not ESPGenerators then return end
+    clearGenESP()
+    for _, gen in ipairs(findGenerators()) do
+        local hl = Instance.new("Highlight")
+        if isGeneratorCompleted(gen) then
+            hl.FillColor = GENERATOR_DONE_COLOR
+            hl.OutlineColor = GENERATOR_DONE_COLOR
+        else
+            hl.FillColor = GENERATOR_COLOR
+            hl.OutlineColor = GENERATOR_COLOR
+        end
+        hl.Parent = gen
+        table.insert(genHighlights, hl)
+    end
+end
+
+local function clearGenESP()
+    for _, hl in pairs(genHighlights) do
+        if hl then hl:Destroy() end
+    end
+    genHighlights = {}
+end
+
+-- Fast Repair и No Skillcheck
+local function findNearestGenerator(maxDistance)
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return nil end
+    local root = character.HumanoidRootPart.Position
+    local nearest = nil
+    local nearestDist = maxDistance
+    for _, gen in ipairs(findGenerators()) do
+        local dist = (gen.Position - root).Magnitude
+        if dist < nearestDist then
+            nearestDist = dist
+            nearest = gen
+        end
+    end
+    return nearest
+end
+
+local function getProgressValue(gen)
+    for _, child in pairs(gen:GetDescendants()) do
+        if child:IsA("NumberValue") then
+            local n = child.Name:lower()
+            if n:find("progress") or n:find("repair") or n:find("fix") or n:find("charge") or n:find("completion") then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+-- Главный цикл (обновление раз в 0.5 сек)
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+
+        -- Скорость
+        if SpeedEnabled and LocalPlayer.Character then
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.WalkSpeed ~= desiredSpeed then
+                hum.WalkSpeed = desiredSpeed
+            end
+        end
+
+        -- Fast Repair
+        if FastRepair then
+            local gen = findNearestGenerator(10)
+            if gen then
+                local prog = getProgressValue(gen)
+                if prog then
+                    prog.Value = prog.Value + (0.15 * 1.8)
+                end
+            end
+        end
+
+        -- No Skillcheck Fail
+        if NoSkillcheckFail then
+            local gen = findNearestGenerator(10)
+            if gen then
+                local prog = getProgressValue(gen)
+                if prog then
+                    if not maxProgress[gen] then
+                        maxProgress[gen] = prog.Value
+                    elseif prog.Value > maxProgress[gen] then
+                        maxProgress[gen] = prog.Value
+                    elseif prog.Value < maxProgress[gen] then
+                        prog.Value = maxProgress[gen]
+                    end
+                end
+            end
+        end
+
+        -- Immunity
+        if Immunity and LocalPlayer.Character then
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health <= hum.MaxHealth * 0.1 and hum.Health > 0 then
+                hum.Health = hum.MaxHealth * 0.3
+            end
+        end
+
+        -- Обновление ESP
+        if ESPPlayers then refreshPlayerESP() end
+        if ESPGenerators then refreshGenESP() end
+    end
+end)
+
+-- Обработка возрождения
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    if SpeedEnabled then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = desiredSpeed end
+    end
+    if ESPPlayers then refreshPlayerESP() end
+end)
+
+print("[DBD Script] loaded (lite version)")
