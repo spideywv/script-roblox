@@ -1,0 +1,462 @@
+--[[ DBD Script - Оптимизированная версия для ПК с Rayfield
+     Все функции сохранены, уменьшена нагрузка на CPU ]]
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+if not Rayfield then return end
+
+local Window = Rayfield:CreateWindow({
+    Name = "DBD Script PC",
+    LoadingTitle = "DBD Cheat PC",
+    LoadingSubtitle = "by spideywv",
+    ConfigurationSaving = { Enabled = true, FolderName = "DBDScriptPC", FileName = "Config" },
+    Discord = { Enabled = false, Invite = "", RememberJoins = false },
+    KeySystem = false,
+})
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+
+-- Variables
+local ESPPlayersEnabled = false
+local ESPGeneratorEnabled = false
+local NameESPEnabled = false
+local FastRepairEnabled = false
+local AntiBlindEnabled = false
+local ImmunityEnabled = true
+local NoSkillcheckFailEnabled = true
+local SpeedEnabled = true
+local desiredSpeed = 21
+local playerHighlights = {}
+local generatorHighlights = {}
+local nameESPTags = {}
+local maxGeneratorProgress = {}
+local generatorCache = {}
+local lastGeneratorScan = 0
+local lastESPUpdate = 0
+local mainThread = nil
+
+-- Цвета
+local SURVIVOR_COLOR = Color3.fromRGB(0, 255, 0)
+local KILLER_COLOR = Color3.fromRGB(255, 0, 0)
+local GENERATOR_COLOR = Color3.fromRGB(255, 255, 0)
+local GENERATOR_DONE_COLOR = Color3.fromRGB(0, 0, 139)
+
+-- Функция определения убийцы (с кешированием)
+local killerCache = {}
+local function isKiller(player)
+    if killerCache[player] ~= nil then
+        return killerCache[player]
+    end
+    local result = false
+    if player.Team then
+        local teamName = player.Team.Name:lower()
+        if teamName:find("killer") or teamName:find("murder") or teamName:find("hunter") then
+            result = true
+        end
+    end
+    if not result and player.Character then
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.WalkSpeed > 20 then
+            result = true
+        end
+    end
+    killerCache[player] = result
+    return result
+end
+
+-- Очистка кеша убийцы
+local function clearKillerCache()
+    killerCache = {}
+end
+
+-- Подсветка игрока
+local function highlightPlayer(player)
+    if player == LocalPlayer then return end
+    local character = player.Character
+    if not character then return end
+    if playerHighlights[player] then
+        playerHighlights[player]:Destroy()
+        playerHighlights[player] = nil
+    end
+    local color = isKiller(player) and KILLER_COLOR or SURVIVOR_COLOR
+    local highlight = Instance.new("Highlight")
+    highlight.FillColor = color
+    highlight.OutlineColor = color
+    highlight.Parent = character
+    playerHighlights[player] = highlight
+end
+
+local function unhighlightPlayer(player)
+    if playerHighlights[player] then
+        playerHighlights[player]:Destroy()
+        playerHighlights[player] = nil
+    end
+end
+
+local function refreshPlayerESP()
+    if not ESPPlayersEnabled then return end
+    for _, player in pairs(Players:GetPlayers()) do
+        if player.Character then
+            highlightPlayer(player)
+        end
+    end
+end
+
+local function clearPlayerESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        unhighlightPlayer(player)
+    end
+    playerHighlights = {}
+end
+
+-- Поиск генераторов (с кешированием)
+local function findGenerators(forceRefresh)
+    local currentTime = os.clock()
+    if not forceRefresh and currentTime - lastGeneratorScan < 2 then
+        return generatorCache
+    end
+    lastGeneratorScan = currentTime
+    local generators = {}
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and (obj.Name:lower():find("generator") or obj.Name:lower():find("gen")) then
+            table.insert(generators, obj)
+        end
+    end
+    generatorCache = generators
+    return generators
+end
+
+local function isGeneratorCompleted(gen)
+    for _, attr in ipairs({"Repaired", "Completed", "Fixed", "Finished", "Done"}) do
+        if gen:GetAttribute(attr) == true then return true end
+    end
+    for _, child in pairs(gen:GetDescendants()) do
+        if child:IsA("NumberValue") then
+            local n = child.Name:lower()
+            if n:find("progress") or n:find("repair") or n:find("fix") or n:find("charge") or n:find("completion") then
+                local maxVal = child.MaxValue or 100
+                if child.Value >= maxVal then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function refreshGeneratorESP()
+    if not ESPGeneratorEnabled then return end
+    for _, hl in pairs(generatorHighlights) do
+        hl:Destroy()
+    end
+    generatorHighlights = {}
+    for _, gen in ipairs(findGenerators(true)) do
+        local highlight = Instance.new("Highlight")
+        if isGeneratorCompleted(gen) then
+            highlight.FillColor = GENERATOR_DONE_COLOR
+            highlight.OutlineColor = GENERATOR_DONE_COLOR
+        else
+            highlight.FillColor = GENERATOR_COLOR
+            highlight.OutlineColor = GENERATOR_COLOR
+        end
+        highlight.Parent = gen
+        table.insert(generatorHighlights, highlight)
+    end
+end
+
+local function clearGeneratorESP()
+    for _, hl in pairs(generatorHighlights) do
+        hl:Destroy()
+    end
+    generatorHighlights = {}
+end
+
+-- Name ESP
+local function addNameTag(player)
+    if nameESPTags[player] then
+        nameESPTags[player]:Destroy()
+        nameESPTags[player] = nil
+    end
+    local character = player.Character
+    if not character then return end
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+    local billboard = Instance.new("BillboardGui")
+    billboard.Size = UDim2.new(0, 100, 0, 15)
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.Parent = head
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(180, 180, 180)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 10
+    label.Text = player.DisplayName or player.Name
+    label.TextStrokeTransparency = 0.5
+    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.Parent = billboard
+    nameESPTags[player] = billboard
+end
+
+local function removeNameTag(player)
+    if nameESPTags[player] then
+        nameESPTags[player]:Destroy()
+        nameESPTags[player] = nil
+    end
+end
+
+local function refreshNameESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            if NameESPEnabled then
+                addNameTag(player)
+            else
+                removeNameTag(player)
+            end
+        end
+    end
+end
+
+local function clearNameESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        removeNameTag(player)
+    end
+    nameESPTags = {}
+end
+
+-- Fast Repair и No Skillcheck
+local function findNearestGenerator(maxDistance)
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return nil end
+    local root = character.HumanoidRootPart.Position
+    local nearest = nil
+    local nearestDist = maxDistance
+    for _, gen in ipairs(findGenerators()) do
+        local dist = (gen.Position - root).Magnitude
+        if dist < nearestDist then
+            nearestDist = dist
+            nearest = gen
+        end
+    end
+    return nearest
+end
+
+local function getProgressValue(gen)
+    for _, child in pairs(gen:GetDescendants()) do
+        if child:IsA("NumberValue") then
+            local n = child.Name:lower()
+            if n:find("progress") or n:find("repair") or n:find("fix") or n:find("charge") or n:find("completion") then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+-- Главный цикл (один поток, обновление раз в 0.3 сек)
+local function mainLoop()
+    while true do
+        task.wait(0.3)
+
+        -- Скорость
+        if SpeedEnabled and LocalPlayer.Character then
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.WalkSpeed ~= desiredSpeed then
+                hum.WalkSpeed = desiredSpeed
+            end
+        end
+
+        -- Fast Repair
+        if FastRepairEnabled then
+            local gen = findNearestGenerator(10)
+            if gen then
+                local prog = getProgressValue(gen)
+                if prog then
+                    prog.Value = prog.Value + (0.15 * 1.8)
+                    if not maxGeneratorProgress[gen] or prog.Value > maxGeneratorProgress[gen] then
+                        maxGeneratorProgress[gen] = prog.Value
+                    end
+                end
+            end
+        end
+
+        -- No Skillcheck Fail
+        if NoSkillcheckFailEnabled then
+            local gen = findNearestGenerator(10)
+            if gen then
+                local prog = getProgressValue(gen)
+                if prog then
+                    if not maxGeneratorProgress[gen] then
+                        maxGeneratorProgress[gen] = prog.Value
+                    elseif prog.Value > maxGeneratorProgress[gen] then
+                        maxGeneratorProgress[gen] = prog.Value
+                    elseif prog.Value < maxGeneratorProgress[gen] then
+                        prog.Value = maxGeneratorProgress[gen]
+                    end
+                end
+            end
+        end
+
+        -- Immunity
+        if ImmunityEnabled and LocalPlayer.Character then
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 and hum.Health <= hum.MaxHealth * 0.1 then
+                hum.Health = hum.MaxHealth * 0.3
+            end
+        end
+
+        -- ESP Players (обновление реже - раз в 1.5 сек)
+        if ESPPlayersEnabled and os.clock() - lastESPUpdate > 1.5 then
+            lastESPUpdate = os.clock()
+            refreshPlayerESP()
+        end
+
+        -- ESP Generators (обновление раз в 2 сек)
+        if ESPGeneratorEnabled and os.clock() - lastGeneratorScan > 2 then
+            refreshGeneratorESP()
+        end
+
+        -- Name ESP (обновление раз в 2 сек)
+        if NameESPEnabled then
+            refreshNameESP()
+        end
+    end
+end
+
+-- Запуск главного цикла
+mainThread = task.spawn(mainLoop)
+
+-- События
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    clearKillerCache()
+    if SpeedEnabled then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = desiredSpeed end
+    end
+    if ESPPlayersEnabled then refreshPlayerESP() end
+end)
+
+Players.PlayerAdded:Connect(function(player)
+    if ESPPlayersEnabled and player.Character then
+        highlightPlayer(player)
+    end
+    if NameESPEnabled then
+        addNameTag(player)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    unhighlightPlayer(player)
+    removeNameTag(player)
+    killerCache[player] = nil
+    nameESPTags[player] = nil
+end)
+
+-- Создание UI
+local MainTab = Window:CreateTab("Main")
+
+local ESPSection = MainTab:CreateSection("ESP")
+local ESPPlayersToggle = MainTab:CreateToggle({
+    Name = "ESP Players",
+    CurrentValue = false,
+    Callback = function(Value)
+        ESPPlayersEnabled = Value
+        if Value then
+            refreshPlayerESP()
+        else
+            clearPlayerESP()
+        end
+    end
+})
+
+local ESPGenToggle = MainTab:CreateToggle({
+    Name = "ESP Generators",
+    CurrentValue = false,
+    Callback = function(Value)
+        ESPGeneratorEnabled = Value
+        if Value then
+            refreshGeneratorESP()
+        else
+            clearGeneratorESP()
+        end
+    end
+})
+
+local NameESPToggle = MainTab:CreateToggle({
+    Name = "Name ESP",
+    CurrentValue = false,
+    Callback = function(Value)
+        NameESPEnabled = Value
+        if Value then
+            refreshNameESP()
+        else
+            clearNameESP()
+        end
+    end
+})
+
+local SpeedSection = MainTab:CreateSection("WalkSpeed")
+local SpeedLabel = MainTab:CreateLabel("Скорость: 21", false)
+local SpeedToggle = MainTab:CreateToggle({
+    Name = "WalkSpeed 21",
+    CurrentValue = true,
+    Callback = function(Value)
+        SpeedEnabled = Value
+        if Value then
+            desiredSpeed = 21
+            SpeedLabel:Set("Скорость: 21")
+        else
+            desiredSpeed = 16
+            SpeedLabel:Set("Скорость: 16")
+            local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = 16 end
+        end
+    end
+})
+
+local RepairSection = MainTab:CreateSection("Repair")
+local FastRepairToggle = MainTab:CreateToggle({
+    Name = "Fast Repair (1.8x)",
+    CurrentValue = false,
+    Callback = function(Value)
+        FastRepairEnabled = Value
+    end
+})
+
+local NoSkillcheckToggle = MainTab:CreateToggle({
+    Name = "No Skillcheck Fail",
+    CurrentValue = true,
+    Callback = function(Value)
+        NoSkillcheckFailEnabled = Value
+    end
+})
+
+local ImmunitySection = MainTab:CreateSection("Immunity")
+local ImmunityToggle = MainTab:CreateToggle({
+    Name = "Get Up Self Immunity",
+    CurrentValue = true,
+    Callback = function(Value)
+        ImmunityEnabled = Value
+    end
+})
+
+local AntiBlindSection = MainTab:CreateSection("Anti Blind")
+local AntiBlindToggle = MainTab:CreateToggle({
+    Name = "Anti Blind (Killer)",
+    CurrentValue = false,
+    Callback = function(Value)
+        AntiBlindEnabled = Value
+    end
+})
+
+-- Уведомление
+Rayfield:Notify({
+    Title = "DBD Script PC",
+    Content = "Оптимизированная версия загружена. Без лагов.",
+    Duration = 5
+})
+
+print("[DBD Script PC] loaded - optimized")
