@@ -1,0 +1,1 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/spideywv/script-roblox/refs/heads/main/Death%20Note%20v2.lua"))()
